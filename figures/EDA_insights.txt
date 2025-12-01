@@ -1,0 +1,79 @@
+
+================================================================================
+PHÂN TÍCH KHÁM PHÁ DỮ LIỆU (EDA) - TÓM TẮT INSIGHTS
+================================================================================
+Thời gian tạo: 2025-12-01 10:31:45
+
+Thống kê Dataset:
+- Số phim: 3,416
+- Số đánh giá: 1,000,209
+- Số users: 6,040
+- Độ thưa: 95.53%
+
+================================================================================
+
+VIZ 1: PHÂN BỐ RATING
+Rating trung bình: 3.58
+Rating trung vị: 4.0
+Rating phổ biến nhất: 4.0
+Độ lệch (skewness): -0.554
+
+Phân bố: Lệch trái (negative)
+Nhận xét: Users có xu hướng cho điểm cao.
+Rating phổ biến nhất: 4 sao (348,971 lượt, 34.9%)
+
+Insight: Positive bias - users thường rate phim họ thích
+
+
+VIZ 2: TOP GENRES
+Tổng số thể loại: 18
+Top 3 thể loại phổ biến:
+  1. Drama: 1,338 phim (39.2%)
+  2. Comedy: 1,090 phim (31.9%)
+  3. Action: 480 phim (14.1%)
+
+Insight: Drama là thể loại chiếm ưu thế trong dataset.
+Sở thích của users nghiêng về Drama, Comedy, Action.
+
+
+VIZ 3: ĐỘ THƯA CỦA MA TRẬN USER-MOVIE
+Tổng số users: 6,040
+Tổng số movies: 3,706
+Tổng số rating có thể có: 22,384,240
+Số rating thực tế: 1,000,209
+Độ thưa (Sparsity): 95.53%
+
+Insight: Ma trận rất thưa (95.5% ô trống).
+Điều này rất phổ biến trong hệ thống gợi ý và chứng minh sự cần thiết của
+Collaborative Filtering và Hybrid approaches.
+
+
+VIZ 4: TOP PHIM ĐƯỢC ĐÁNH GIÁ NHIỀU
+Phim được đánh giá nhiều nhất: American Beauty
+  - Số lượng ratings: 3,428
+  - Rating trung bình: 4.32/5.0
+  - Thể loại: Comedy|Drama
+
+Top 20 phim chiếm 52,041 ratings 
+(5.2% tổng số ratings)
+
+Insight: Các phim nổi tiếng chiếm ưu thế trong tương tác của users. 
+Đây có thể là các bom tấn mà hầu hết users đã xem.
+
+
+VIZ 5: RATINGS THEO THỜI GIAN
+Khoảng thời gian: 2000-04 đến 2003-02
+Tổng số tháng: 35
+Tháng có nhiều ratings nhất: 2000-11 (290,793 ratings)
+Trung bình ratings/tháng: 28,577
+
+Insight: Xu hướng giảm trong hoạt động của users.
+Hoạt động cao nhất vào 2000-11 cho thấy có thể có pattern theo mùa hoặc giai đoạn thu thập dữ liệu.
+
+
+VIZ 6: RATING THEO GENRE
+Thể loại có rating cao nhất: Film-Noir (3.82★)
+Thể loại thấp nhất (trong top 15): Fantasy (3.09★)
+
+Insight: Chất lượng các thể loại khác nhau. Phim Film-Noir có xu hướng 
+nhận rating cao hơn, cho thấy sở thích mạnh của users hoặc chất lượng sản xuất tốt hơn.
