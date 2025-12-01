@@ -33,3 +33,9 @@ saved_model/**/* filter=lfs diff=lfs merge=lfs -text
 *.zip filter=lfs diff=lfs merge=lfs -text
 *.zst filter=lfs diff=lfs merge=lfs -text
 *tfevents* filter=lfs diff=lfs merge=lfs -text
+data/cleaned/ratings_cleaned.csv filter=lfs diff=lfs merge=lfs -text
+data/raw/ratings.csv filter=lfs diff=lfs merge=lfs -text
+models/svd_model.pkl filter=lfs diff=lfs merge=lfs -text
+figures/*.png filter=lfs diff=lfs merge=lfs -text
+models/*.h5 filter=lfs diff=lfs merge=lfs -text
+models/*.pkl filter=lfs diff=lfs merge=lfs -text
