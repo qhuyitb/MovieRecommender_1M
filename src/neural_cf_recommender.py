@@ -68,11 +68,11 @@ class NCFRecommender:
     
     @classmethod
     def load(cls, 
-             model_path='models/neural_cf_model.h5',
-             user_encoder_path='models/neural_cf_user_encoder.pkl',
-             movie_encoder_path='models/neural_cf_movie_encoder.pkl',
-             ratings_path='data/cleaned/ratings_cleaned.csv',
-             movies_path='data/cleaned/movies_cleaned.csv'):
+             model_path='../models/neural_cf_model.h5',
+             user_encoder_path='../models/neural_cf_user_encoder.pkl',
+             movie_encoder_path='../models/neural_cf_movie_encoder.pkl',
+             ratings_path='../data/cleaned/ratings_cleaned.csv',
+             movies_path='../data/cleaned/movies_cleaned.csv'):
         """
         Load tất cả components và tạo recommender instance
         Đường dẫn mặc định từ project root
