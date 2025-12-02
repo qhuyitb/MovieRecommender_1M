@@ -691,7 +691,7 @@ def print_recommendations(recommendations: pd.DataFrame,
     for _, row in recommendations.iterrows():
         print(f"#{row['rank']:<2} | {row['title']:<45} | {row['genres']:<20}")
         print(f"     Dự đoán: {row['predicted_rating']:.2f} | "
-              f"TB: {row['rating_avg']:.2f}★ | "
+              f"TB: {row['rating_avg']:.2f} | "
               f"Số đánh giá: {row['rating_count']:,}")
         print()
 
@@ -708,7 +708,7 @@ def print_user_profile(profile: Optional[Dict]):
     
     print(f"\nThống kê:")
     print(f"Số phim đã đánh giá: {profile['n_ratings']}")
-    print(f"Đánh giá trung bình: {profile['avg_rating']:.2f}★")
+    print(f"Đánh giá trung bình: {profile['avg_rating']:.2f}")
     print(f"Độ lệch chuẩn: {profile['rating_std']:.2f}")
     
     print(f"\nThể loại yêu thích:")
@@ -717,7 +717,7 @@ def print_user_profile(profile: Optional[Dict]):
     
     print(f"\nTop phim được đánh giá cao:")
     for movie in profile['top_rated_movies']:
-        print(f"{movie['title_clean']} - {movie['rating']:.1f}★")
+        print(f"{movie['title_clean']} - {movie['rating']:.1f}")
         print(f"{movie['genres']}")
 
 
