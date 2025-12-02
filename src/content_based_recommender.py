@@ -3,8 +3,6 @@ Content-Based Movie Recommender System
 Module này chứa ContentBasedRecommender class để gợi ý phim dựa trên nội dung.
 Sử dụng TF-IDF và Cosine Similarity.
 
-Author: Your Name
-Date: 2024
 """
 
 import pandas as pd
