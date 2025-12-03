@@ -665,9 +665,9 @@ def load_recommender(model_dir: Optional[str] = None,
     if not ratings_path.exists():
         raise FileNotFoundError(f"Ratings data not found: {ratings_path}")
     
-    print(f"Project root: {project_root}")
-    print(f"Model dir: {model_dir}")
-    print(f"Data dir: {data_dir}")
+    # print(f"Project root: {project_root}")
+    # print(f"Model dir: {model_dir}")
+    # print(f"Data dir: {data_dir}")
     
     return SVDRecommender(
         str(model_path), 
