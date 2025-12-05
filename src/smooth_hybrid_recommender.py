@@ -5,8 +5,6 @@ PERFORMANCE-OPTIMIZED Smooth Hybrid Recommender
 
 import numpy as np
 import pandas as pd
-from pathlib import Path
-import pickle
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -21,15 +19,14 @@ class SmoothHybridRecommender:
         self.ratings = ratings_df
         self.movies = movies_df
         
-        # Build user rating count cache
-        self.user_rating_counts = ratings_df.groupby('userId').size().to_dict()
-        
-        # OPTIMIZATION: Pre-build user rated movies dict
-        self._user_rated_cache = {}
-        for user_id in self.user_rating_counts.keys():
-            self._user_rated_cache[user_id] = set(
-                ratings_df[ratings_df['userId'] == user_id]['movieId'].values
-            )
+        # Build user rated movie sets (fast single-pass using groupby)
+        grouped = ratings_df.groupby('userId')['movieId'].apply(lambda s: set(s.values))
+        self._user_rated_cache = grouped.to_dict()
+        # user_rating_counts derived from the cached sets
+        self.user_rating_counts = {uid: len(mids) for uid, mids in self._user_rated_cache.items()}
+        # Precompute quick membership sets
+        self.user_set = set(self._user_rated_cache.keys())
+        self.movie_set = set(movies_df['movieId'].unique())
         
         print("Smooth Hybrid Recommender sẵn sàng!")
         print(f"   - Content-Based: {len(movies_df):,} phim")
@@ -184,7 +181,7 @@ class SmoothHybridRecommender:
         if weights['ncf'] > 0.01:
             try:
                 ncf_recs = self.ncf_rec.recommend(
-                    user_id, n=n*3, exclude_rated=True, return_details=True
+                    user_id, n=n*3, exclude_rated=False, return_details=True
                 )
                 
                 if not ncf_recs.empty:
@@ -204,28 +201,167 @@ class SmoothHybridRecommender:
                 return pd.DataFrame(), weights
             return pd.DataFrame()
         
-        # TỐI ƯU HÓA: Merge tất cả cùng lúc thay vì xây dựng dict lặp đi lặp lại
-        # Nhanh hơn 10-50x so với cách dùng iterrows()!
-        results_df = model_recs[0]
-        for i in range(1, len(model_recs)):
-            results_df = results_df.merge(
-                model_recs[i], 
-                on=['movieId', 'title', 'genres'], 
-                how='outer'
-            )
+        # MERGE CHANGE: use outer join and impute missing model scores with model-specific means
+        score_names = ['content_score', 'svd_score', 'ncf_score']
+
+        # Compute per-model default (mean) score from available model_recs
+        default_scores = {k: None for k in score_names}
+        for df in model_recs:
+            for s in score_names:
+                if s in df.columns:
+                    try:
+                        val = float(df[s].mean())
+                        if default_scores[s] is None:
+                            default_scores[s] = val
+                    except Exception:
+                        continue
+
+        # Fallback defaults
+        for s in score_names:
+            if default_scores[s] is None:
+                default_scores[s] = 3.0
+
+        # Concatenate all model recommendations and aggregate per movieId (faster than repeated outer-joins)
+        # Ensure each model's DataFrame has unique column names (drop duplicate columns keeping first)
+        for i, df in enumerate(model_recs):
+            try:
+                if df.columns.duplicated().any():
+                    model_recs[i] = df.loc[:, ~df.columns.duplicated()].copy()
+            except Exception:
+                continue
+
+        candidates = pd.concat(model_recs, ignore_index=True, sort=False)
+
+        # Ensure common columns exist to allow aggregation without KeyError
+        for c in ['content_score', 'svd_score', 'ncf_score', 'title_clean', 'title', 'genres', 'rating_avg']:
+            if c not in candidates.columns:
+                candidates[c] = pd.NA
+
+        agg_dict = {
+            'title_clean': 'first',
+            'title': 'first',
+            'genres': 'first',
+            'rating_avg': 'first',
+            'content_score': 'mean',
+            'svd_score': 'mean',
+            'ncf_score': 'mean'
+        }
+
+        results_df = candidates.groupby('movieId', as_index=False).agg(agg_dict)
+
+        # Consolidate scores and fill missing with model-specific defaults
+        for score_name in score_names:
+            score_cols = [col for col in results_df.columns if col.startswith(score_name)]
+            if len(score_cols) > 1:
+                try:
+                    results_df[score_name] = results_df[score_cols].bfill(axis=1).iloc[:, 0]
+                except Exception:
+                    base = results_df[score_cols[0]]
+                    for col in score_cols[1:]:
+                        base = base.fillna(results_df[col])
+                    results_df[score_name] = base
+                for col in score_cols:
+                    if col != score_name and col in results_df.columns:
+                        results_df = results_df.drop(columns=[col])
+            elif len(score_cols) == 1:
+                if score_cols[0] != score_name:
+                    results_df = results_df.rename(columns={score_cols[0]: score_name})
+
+            # Fill missing with per-model default
+            results_df[score_name] = results_df.get(score_name, pd.Series([default_scores[score_name]] * len(results_df)))
+            results_df[score_name] = results_df[score_name].fillna(default_scores[score_name])
+
+        # NORMALIZE per-model scores to same scale [1,5] using min-max on the candidate set
+        # This avoids one model dominating due to scale differences.
+        eps = 1e-8
+        for score_name in score_names:
+            # results_df[score_name] may be a DataFrame if duplicate-named columns exist;
+            # coalesce left-to-right to a single Series first.
+            col_data = results_df[score_name]
+            if isinstance(col_data, pd.DataFrame):
+                try:
+                    col = col_data.bfill(axis=1).iloc[:, 0].astype(float)
+                except Exception:
+                    col = col_data.iloc[:, 0].astype(float)
+            else:
+                col = col_data.astype(float)
+
+            minv = col.min()
+            maxv = col.max()
+            if (maxv - minv) < eps:
+                # constant column -> set to neutral rating 3.0
+                results_df[f'{score_name}_norm'] = 3.0
+            else:
+                results_df[f'{score_name}_norm'] = 1.0 + 4.0 * (col - minv) / (maxv - minv)
         
-        # TỐI ƯU HÓA: Tính điểm trọng số dạng vector
-        # Điền NaN bằng điểm mặc định 3.0
-        results_df['content_score'] = results_df.get('content_score', pd.Series([np.nan] * len(results_df))).fillna(3.0)
-        results_df['svd_score'] = results_df.get('svd_score', pd.Series([np.nan] * len(results_df))).fillna(3.0)
-        results_df['ncf_score'] = results_df.get('ncf_score', pd.Series([np.nan] * len(results_df))).fillna(3.0)
-        
+        # Ensure unique column names by coalescing duplicate-named columns (handle duplicates robustly)
+        cols_list = list(results_df.columns)
+        col_positions = {}
+        for idx, cname in enumerate(cols_list):
+            col_positions.setdefault(cname, []).append(idx)
+
+        if any(len(v) > 1 for v in col_positions.values()):
+            new_df = pd.DataFrame(index=results_df.index)
+            for cname, positions in col_positions.items():
+                if len(positions) == 1:
+                    new_df[cname] = results_df.iloc[:, positions[0]]
+                else:
+                    # gather the duplicated columns by position and coalesce left-to-right
+                    dup_block = results_df.iloc[:, positions]
+                    try:
+                        new_df[cname] = dup_block.bfill(axis=1).iloc[:, 0]
+                    except Exception:
+                        base = dup_block.iloc[:, 0]
+                        for c in range(1, dup_block.shape[1]):
+                            base = base.fillna(dup_block.iloc[:, c])
+                        new_df[cname] = base
+            results_df = new_df
+
         # Tính trung bình có trọng số (KHÔNG CÓ VÒNG LẶP!)
-        results_df['predicted_rating'] = (
-            weights['content'] * results_df['content_score'] +
-            weights['svd'] * results_df['svd_score'] +
-            weights['ncf'] * results_df['ncf_score']
-        )
+        # Always use per-user smooth weights (no meta-learning)
+        final_weights = weights
+
+        try:
+            # combine using the normalized score columns
+            results_df['predicted_rating'] = (
+                final_weights['content'] * results_df['content_score_norm'] +
+                final_weights['svd'] * results_df['svd_score_norm'] +
+                final_weights['ncf'] * results_df['ncf_score_norm']
+            )
+        except Exception as e:
+            # Diagnostic and a robust fallback: reset index and coalesce any remaining duplicate score columns
+            print(f"[Hybrid Debug] Error computing predicted_rating: {e}")
+            print(f"[Hybrid Debug] Columns before fix: {results_df.columns.tolist()}")
+            results_df = results_df.reset_index(drop=True)
+
+            for score_name in score_names:
+                score_cols = [col for col in results_df.columns if col.startswith(score_name)]
+                if len(score_cols) > 1:
+                    try:
+                        results_df[score_name] = results_df[score_cols].bfill(axis=1).iloc[:, 0]
+                    except Exception:
+                        base = results_df[score_cols[0]]
+                        for col in score_cols[1:]:
+                            base = base.fillna(results_df[col])
+                        results_df[score_name] = base
+                    for col in score_cols:
+                        if col != score_name and col in results_df.columns:
+                            results_df = results_df.drop(columns=[col])
+                elif len(score_cols) == 1:
+                    if score_cols[0] != score_name:
+                        results_df = results_df.rename(columns={score_cols[0]: score_name})
+
+                if score_name not in results_df.columns:
+                    results_df[score_name] = 3.0
+                else:
+                    results_df[score_name] = results_df[score_name].fillna(3.0)
+
+            # Try again
+            results_df['predicted_rating'] = (
+                weights['content'] * results_df['content_score'] +
+                weights['svd'] * results_df['svd_score'] +
+                weights['ncf'] * results_df['ncf_score']
+            )
         
         # TỐI ƯU HÓA: Lọc vectorized
         if exclude_rated and rated_movies:
@@ -238,10 +374,51 @@ class SmoothHybridRecommender:
         results_df = results_df.reset_index(drop=True)
         results_df['rank'] = range(1, len(results_df) + 1)
         
-        # Thứ tự cột cuối cùng
-        results_df = results_df.rename(columns={'title': 'title_clean'})
+        # Consolidate title fields into a single `title_clean` column.
+        # Some model DataFrames provide `title_clean`, others `title`.
+        # Prefer a non-empty value; if both present prefer the longer (more complete) string.
+        if 'title_clean' not in results_df.columns:
+            results_df['title_clean'] = pd.NA
+        if 'title' not in results_df.columns:
+            results_df['title'] = pd.NA
+
+        # Make sure working types are strings to allow length checks
+        def _safe_str(x):
+            if pd.isna(x):
+                return ''
+            return str(x)
+
+        # Vectorized consolidation: choose the longer non-empty value
+        t1 = results_df['title_clean'].fillna('').astype(str)
+        t2 = results_df['title'].fillna('').astype(str)
+
+        # If one is empty, take the other; if both non-empty take the longer (likely more complete)
+        pick_title = np.where(
+            (t1 == '') & (t2 == ''),
+            '',
+            np.where(
+                t1 == '', t2,
+                np.where(t2 == '', t1, np.where(t2.str.len() > t1.str.len(), t2, t1))
+            )
+        )
+
+        results_df['title_clean'] = pick_title
+
+        # Drop the old `title` column to avoid duplicate column names downstream
+        if 'title' in results_df.columns:
+            try:
+                results_df = results_df.drop(columns=['title'])
+            except Exception:
+                # if drop fails for any reason, ignore and continue
+                pass
+
+        # Final column ordering
         cols = ['rank', 'movieId', 'title_clean', 'genres', 'predicted_rating',
                 'content_score', 'svd_score', 'ncf_score']
+        # Ensure missing cols exist so indexing doesn't KeyError
+        for c in cols:
+            if c not in results_df.columns:
+                results_df[c] = pd.NA
         results_df = results_df[cols]
         
         if return_weights:
@@ -338,6 +515,8 @@ class SmoothHybridRecommender:
             })
         
         return pd.DataFrame(results)
+    # Meta-learning functions removed: system uses smooth switching only.
+
     
     @classmethod
     def load(cls,
