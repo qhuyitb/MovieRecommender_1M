@@ -261,11 +261,16 @@ class ContentBasedRecommender:
         # Tạo DataFrame kết quả
         recommendations = self.movies.iloc[top_n_indices].copy()
         recommendations['similarity_score'] = top_n_scores
+        # Normalize/alias column names used by other recommenders
+        # Ensure consistent score column name for hybrid merging
+        recommendations['content_score'] = recommendations['similarity_score']
+        # Keep both title_clean and title for compatibility
+        recommendations['title'] = recommendations['title_clean']
         recommendations['rank'] = range(1, n+1)
         
         # Sắp xếp lại columns
-        result_cols = ['rank', 'movieId', 'title_clean', 'genres', 
-                       'rating_avg', 'rating_count', 'similarity_score']
+        result_cols = ['rank', 'movieId', 'title_clean', 'title', 'genres', 
+                   'rating_avg', 'rating_count', 'similarity_score', 'content_score']
         recommendations = recommendations[result_cols]
         
         if verbose:
@@ -370,10 +375,13 @@ class ContentBasedRecommender:
         # Tạo DataFrame kết quả
         recommendations = self.movies.iloc[top_n_indices].copy()
         recommendations['avg_similarity'] = top_n_scores
+        # Standardize columns
+        recommendations['content_score'] = recommendations['avg_similarity']
+        recommendations['title'] = recommendations['title_clean']
         recommendations['rank'] = range(1, n+1)
         
-        result_cols = ['rank', 'movieId', 'title_clean', 'genres', 
-                       'rating_avg', 'rating_count', 'avg_similarity']
+        result_cols = ['rank', 'movieId', 'title_clean', 'title', 'genres', 
+                   'rating_avg', 'rating_count', 'avg_similarity', 'content_score']
         recommendations = recommendations[result_cols]
         
         if verbose:

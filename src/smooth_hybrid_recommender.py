@@ -35,8 +35,16 @@ class SmoothHybridRecommender:
         print(f"   - Số người dùng: {len(self.user_rating_counts):,}")
     
     @staticmethod
-    def calculate_smooth_weights(n_ratings, method='sigmoid'):
-        """Calculate smooth weights (unchanged)"""
+    def calculate_smooth_weights(n_ratings, method='sigmoid', min_weight: float = 0.02, max_content_weight: float = 0.1):
+        """Calculate smooth weights with a minimum weight floor.
+
+        Args:
+            n_ratings: number of ratings by the user
+            method: 'sigmoid'|'exponential'|'polynomial'
+            min_weight: minimum per-model weight before renormalization
+
+        Returns a dict of normalized weights summing to 1.0.
+        """
         if method == 'sigmoid':
             content_weight = 1 / (1 + np.exp((n_ratings - 5) / 2))
             ncf_weight = 1 / (1 + np.exp(-(n_ratings - 20) / 5))
@@ -66,13 +74,47 @@ class SmoothHybridRecommender:
                 ncf_weight = 1 - svd_weight
         else:
             raise ValueError(f"Unknown method: {method}")
-        
-        total = content_weight + svd_weight + ncf_weight
-        
+
+        # Apply minimum weight floor to avoid any model being completely zeroed out
+        w = np.array([float(content_weight), float(svd_weight), float(ncf_weight)], dtype=float)
+        # if all zeros (defensive), set uniform
+        if np.allclose(w, 0.0):
+            w = np.array([1.0, 1.0, 1.0], dtype=float)
+
+        # enforce floor
+        floor = float(min_weight)
+        w = np.maximum(w, floor)
+
+        # renormalize
+        total = float(w.sum())
+        if total <= 0:
+            # fallback to uniform
+            w = np.array([1.0, 1.0, 1.0], dtype=float)
+            total = float(w.sum())
+
+        content_weight, svd_weight, ncf_weight = (w / total).tolist()
+
+        # Apply a maximum cap to content weight to avoid content dominating (>max_content_weight)
+        try:
+            cap = float(max_content_weight)
+        except Exception:
+            cap = 0.2
+        if content_weight > cap:
+            content_weight = cap
+            # renormalize remaining weights proportionally
+            rem = svd_weight + ncf_weight
+            if rem <= 0:
+                # split remaining equally
+                svd_weight = (1.0 - content_weight) / 2.0
+                ncf_weight = (1.0 - content_weight) / 2.0
+            else:
+                svd_weight = svd_weight / rem * (1.0 - content_weight)
+                ncf_weight = ncf_weight / rem * (1.0 - content_weight)
+
         return {
-            'content': content_weight / total,
-            'svd': svd_weight / total,
-            'ncf': ncf_weight / total
+            'content': content_weight,
+            'svd': svd_weight,
+            'ncf': ncf_weight
         }
     
     @staticmethod
@@ -90,7 +132,9 @@ class SmoothHybridRecommender:
         return self.user_rating_counts.get(user_id, 0)
     
     def recommend(self, user_id, n=10, method='sigmoid', 
-                  exclude_rated=True, return_weights=False, verbose=False):
+                  exclude_rated=True, return_weights=False, verbose=False,
+                  collect_all_candidates=True, min_weight: float = 0.02,
+                  max_content_weight: float = 0.1, content_for_cold_only: bool = True):
         """
         TỐI ƯU HÓA: Gợi ý hybrid với vectorized operations
         
@@ -100,7 +144,22 @@ class SmoothHybridRecommender:
         - Merge một lần duy nhất
         """
         n_ratings = self.get_user_rating_count(user_id)
-        weights = self.calculate_smooth_weights(n_ratings, method=method)
+        weights = self.calculate_smooth_weights(n_ratings, method=method, min_weight=min_weight, max_content_weight=max_content_weight)
+
+        # If NCF component is not available (stub or None), zero its weight and
+        # renormalize remaining weights so hybrid still functions.
+        has_ncf = hasattr(self, 'ncf_rec') and (self.ncf_rec is not None)
+        if not has_ncf:
+            # Zero ncf weight and renormalize content/svd
+            weights['ncf'] = 0.0
+            total = weights.get('content', 0.0) + weights.get('svd', 0.0)
+            if total <= 0:
+                # fallback: equal weights between available models
+                weights['content'] = 0.5
+                weights['svd'] = 0.5
+            else:
+                weights['content'] = weights['content'] / total
+                weights['svd'] = weights['svd'] / total
         
         if verbose:
             
@@ -118,9 +177,15 @@ class SmoothHybridRecommender:
         
         # Thu thập gợi ý từ mỗi model
         model_recs = []
+        model_counts = {'content': 0, 'svd': 0, 'ncf': 0}
+        # candidate multiplier (increase to capture more overlap)
+        candidate_mult = 8
+        # number of content seeds to use (top rated user movies)
+        content_seed_count = 5
         
-        # 1. Content-Based
-        if weights['content'] > 0.01:
+        # 1. Content-Based: by default only use content for cold-start users (diverse but often irrelevant)
+        cb_allowed = (n_ratings == 0) or (not content_for_cold_only and (weights['content'] > 0.01 or collect_all_candidates))
+        if cb_allowed:
             try:
                 if n_ratings == 0:
                     cb_recs = self.movies.nlargest(n * 3, 'rating_avg')[
@@ -133,65 +198,123 @@ class SmoothHybridRecommender:
                     ].nlargest(5, 'rating')['movieId'].values
                     
                     if len(user_movies) > 0:
-                        cb_recs = self.content_rec.recommend(
-                            user_movies[0], n=n*3, verbose=False
-                        )
-                        
-                        if not cb_recs.empty:
-                            cb_recs = cb_recs.rename(columns={
-                                'similarity_score': 'content_score',
-                                'title_clean': 'title'
-                            })
+                        # Use multiple seeds (top-rated movies) to collect a richer candidate set
+                        seeds = list(user_movies[:content_seed_count])
+                        cb_parts = []
+                        for seed in seeds:
+                            try:
+                                try:
+                                    part = self.content_rec.recommend(movie_id=seed, n=n*candidate_mult, verbose=False)
+                                except TypeError:
+                                    part = self.content_rec.recommend(seed, n=n*candidate_mult, verbose=False)
+                            except Exception:
+                                part = pd.DataFrame()
+                            if part is not None and not part.empty:
+                                # Normalize similarity/predicted columns to content_score
+                                if 'similarity_score' in part.columns:
+                                    part = part.rename(columns={'similarity_score': 'content_score'})
+                                if 'similarity' in part.columns and 'content_score' not in part.columns:
+                                    part = part.rename(columns={'similarity': 'content_score'})
+                                cb_parts.append(part)
+                        if cb_parts:
+                            cb_recs = pd.concat(cb_parts, ignore_index=True, sort=False)
+                            # drop duplicates keep highest score per movieId
+                            if 'content_score' in cb_recs.columns:
+                                cb_recs = cb_recs.sort_values('content_score', ascending=False)
+                            cb_recs = cb_recs.drop_duplicates(subset='movieId')
+                        else:
+                            # Fallback: if content model cannot produce candidates for user seeds,
+                            # use global popular movies as content candidates so hybrid has content coverage
+                            cb_recs = self.movies.nlargest(n * candidate_mult, 'rating_avg')[
+                                ['movieId', 'title_clean', 'genres', 'rating_avg']
+                            ].copy()
+                            cb_recs['content_score'] = cb_recs['rating_avg'].astype(float)
                     else:
                         cb_recs = pd.DataFrame()
                 
                 if not cb_recs.empty:
                     # TỐI ƯU HÓA: Xử lý vectorized thay vì iterrows()
-                    cb_recs = cb_recs.rename(columns={
-                        'title_clean': 'title',
-                        'predicted_rating': 'content_score',
-                        'similarity': 'content_score'
-                    })
+                    if 'predicted_rating' in cb_recs.columns and 'content_score' not in cb_recs.columns:
+                        cb_recs = cb_recs.rename(columns={'predicted_rating': 'content_score'})
+
+                    # Ensure a canonical title column exists and prefer 'title_clean'
+                    if 'title_clean' not in cb_recs.columns and 'title' in cb_recs.columns:
+                        cb_recs['title_clean'] = cb_recs['title']
+
+                    # Fill missing content_score from rating_avg if present; otherwise leave as NaN
                     if 'content_score' not in cb_recs.columns:
-                        cb_recs['content_score'] = cb_recs.get('rating_avg', 3.5)
-                    
-                    cb_recs = cb_recs[['movieId', 'title', 'genres', 'content_score']]
+                        if 'rating_avg' in cb_recs.columns:
+                            cb_recs['content_score'] = cb_recs['rating_avg'].astype(float)
+                        else:
+                            cb_recs['content_score'] = pd.NA
+
+                    cb_recs = cb_recs[['movieId', 'title_clean', 'genres', 'content_score']]
+                    cb_recs = cb_recs.copy()
+                    cb_recs['_source'] = 'content'
                     model_recs.append(cb_recs)
+                    model_counts['content'] = model_counts.get('content', 0) + len(cb_recs)
             except Exception as e:
                 if verbose:
                     print(f"Content-Based thất bại: {e}")
         
         # 2. SVD
-        if weights['svd'] > 0.01:
+        # 2. SVD: collect candidates even if weight small when collect_all_candidates True
+        if weights['svd'] > 0.01 or collect_all_candidates:
             try:
-                svd_recs = self.svd_rec.recommend(user_id, n=n*3, exclude_rated=False)
-                
-                if not svd_recs.empty:
+                # ensure we do not over-filter candidates inside SVD: allow low min_rating_count
+                svd_recs = self.svd_rec.recommend(user_id, n=n*candidate_mult, exclude_rated=False, min_rating_count=0)
+            except ValueError:
+                # User unknown to SVD (cold-user). Attempt cold-start SVD routine if available
+                try:
+                    favs = list(self.ratings[self.ratings['userId'] == user_id][['movieId', 'rating']].itertuples(index=False, name=None))
+                    svd_recs = self.svd_rec.recommend_new_user(favorite_movies=favs, n=n*candidate_mult, min_rating_count=0)
+                except Exception:
+                    # fallback to popular movies
+                    svd_recs = self.movies.nlargest(n * candidate_mult, 'rating_avg')[['movieId', 'title_clean', 'genres', 'rating_avg']].copy()
+                    svd_recs['predicted_rating'] = svd_recs['rating_avg'].astype(float)
+
+            try:
+                if svd_recs is not None and not svd_recs.empty:
                     # TỐI ƯU HÓA: Đổi tên và chọn cột trong một bước
                     svd_recs = svd_recs.rename(columns={
                         'predicted_rating': 'svd_score'
                     })
-                    svd_recs = svd_recs[['movieId', 'title', 'genres', 'svd_score']]
+                    # Normalize title column name to 'title_clean'
+                    if 'title_clean' not in svd_recs.columns and 'title' in svd_recs.columns:
+                        svd_recs['title_clean'] = svd_recs['title']
+                    if 'title_clean' not in svd_recs.columns:
+                        svd_recs['title_clean'] = pd.NA
+                    svd_recs = svd_recs[['movieId', 'title_clean', 'genres', 'svd_score']]
+                    svd_recs = svd_recs.copy()
+                    svd_recs['_source'] = 'svd'
                     model_recs.append(svd_recs)
+                    model_counts['svd'] = model_counts.get('svd', 0) + len(svd_recs)
             except Exception as e:
                 if verbose:
                     print(f"SVD thất bại: {e}")
         
         # 3. NCF
-        if weights['ncf'] > 0.01:
+        # 3. NCF: always collect NCF candidates (NCF often strong for active users)
+        if weights['ncf'] > 0.01 or collect_all_candidates:
             try:
+                # ensure NCF does not over-filter candidates (min_rating_count=0)
                 ncf_recs = self.ncf_rec.recommend(
-                    user_id, n=n*3, exclude_rated=False, return_details=True
+                    user_id, n=n*candidate_mult, exclude_rated=False, return_details=True, min_rating_count=0
                 )
                 
-                if not ncf_recs.empty:
+                if ncf_recs is not None and not ncf_recs.empty:
                     # TỐI ƯU HÓA: Vectorized rename
-                    ncf_recs = ncf_recs.rename(columns={
-                        'title_clean': 'title',
-                        'predicted_rating': 'ncf_score'
-                    })
-                    ncf_recs = ncf_recs[['movieId', 'title', 'genres', 'ncf_score']]
+                    ncf_recs = ncf_recs.rename(columns={'predicted_rating': 'ncf_score'})
+                    # Normalize title to 'title_clean' if necessary
+                    if 'title_clean' not in ncf_recs.columns and 'title' in ncf_recs.columns:
+                        ncf_recs['title_clean'] = ncf_recs['title']
+                    if 'title_clean' not in ncf_recs.columns:
+                        ncf_recs['title_clean'] = pd.NA
+                    ncf_recs = ncf_recs[['movieId', 'title_clean', 'genres', 'ncf_score']]
+                    ncf_recs = ncf_recs.copy()
+                    ncf_recs['_source'] = 'ncf'
                     model_recs.append(ncf_recs)
+                    model_counts['ncf'] = model_counts.get('ncf', 0) + len(ncf_recs)
             except Exception as e:
                 if verbose:
                     print(f"NCF thất bại: {e}")
@@ -205,6 +328,8 @@ class SmoothHybridRecommender:
         score_names = ['content_score', 'svd_score', 'ncf_score']
 
         # Compute per-model default (mean) score from available model_recs
+        # but do NOT fill missing with a constant yet — keep NaN so we can
+        # perform adaptive per-item weighting below. Use NaN as a marker.
         default_scores = {k: None for k in score_names}
         for df in model_recs:
             for s in score_names:
@@ -216,10 +341,10 @@ class SmoothHybridRecommender:
                     except Exception:
                         continue
 
-        # Fallback defaults
+        # If no mean found for a model, leave as NaN to indicate missing global info
         for s in score_names:
             if default_scores[s] is None:
-                default_scores[s] = 3.0
+                default_scores[s] = float('nan')
 
         # Concatenate all model recommendations and aggregate per movieId (faster than repeated outer-joins)
         # Ensure each model's DataFrame has unique column names (drop duplicate columns keeping first)
@@ -230,9 +355,66 @@ class SmoothHybridRecommender:
             except Exception:
                 continue
 
+        # Ensure each model's DataFrame uses canonical score column names and numeric dtypes
+        for i, df in enumerate(model_recs):
+            try:
+                src = df['_source'] if '_source' in df.columns else None
+            except Exception:
+                src = None
+            # Normalize common predicted_rating -> {svd,ncf}_score
+            try:
+                if src == 'svd' and 'predicted_rating' in df.columns and 'svd_score' not in df.columns:
+                    df = df.rename(columns={'predicted_rating': 'svd_score'})
+                if src == 'ncf' and 'predicted_rating' in df.columns and 'ncf_score' not in df.columns:
+                    df = df.rename(columns={'predicted_rating': 'ncf_score'})
+                if src == 'content':
+                    if 'similarity_score' in df.columns and 'content_score' not in df.columns:
+                        df = df.rename(columns={'similarity_score': 'content_score'})
+                    if 'similarity' in df.columns and 'content_score' not in df.columns:
+                        df = df.rename(columns={'similarity': 'content_score'})
+            except Exception:
+                pass
+
+            # Ensure canonical columns exist
+            for c in ['movieId', 'title_clean', 'genres']:
+                if c not in df.columns:
+                    df[c] = pd.NA
+
+            # Coerce score columns to numeric to avoid later silent type coercion
+            for score_col in ['content_score', 'svd_score', 'ncf_score']:
+                if score_col in df.columns:
+                    df[score_col] = pd.to_numeric(df[score_col], errors='coerce')
+
+            model_recs[i] = df
+
+        # Show a small sample per-source for diagnostics
+        if verbose:
+            try:
+                for df in model_recs:
+                    src = df['_source'].iat[0] if ('_source' in df.columns and len(df)>0) else 'unknown'
+                    print(f"[Hybrid Debug] sample rows from source={src}:\n", df.head(3))
+            except Exception:
+                pass
+
         candidates = pd.concat(model_recs, ignore_index=True, sort=False)
 
+        # Drop candidates whose movieId is not present in our movies DataFrame
+        try:
+            before_cnt = len(candidates)
+            candidates = candidates[candidates['movieId'].isin(self.movie_set)]
+            after_cnt = len(candidates)
+            if verbose:
+                print(f"[Hybrid Debug] Removed {before_cnt-after_cnt} candidates not in movies_df")
+        except Exception:
+            pass
+
         # Ensure common columns exist to allow aggregation without KeyError
+        if verbose:
+            try:
+                print(f"[Hybrid Debug] Candidates collected per model (post-dedup lengths): {model_counts}")
+            except Exception:
+                pass
+
         for c in ['content_score', 'svd_score', 'ncf_score', 'title_clean', 'title', 'genres', 'rating_avg']:
             if c not in candidates.columns:
                 candidates[c] = pd.NA
@@ -267,17 +449,24 @@ class SmoothHybridRecommender:
                 if score_cols[0] != score_name:
                     results_df = results_df.rename(columns={score_cols[0]: score_name})
 
-            # Fill missing with per-model default
-            results_df[score_name] = results_df.get(score_name, pd.Series([default_scores[score_name]] * len(results_df)))
-            results_df[score_name] = results_df[score_name].fillna(default_scores[score_name])
+            # Ensure column exists (leave NaN for missing values)
+            if score_name not in results_df.columns:
+                results_df[score_name] = pd.Series([float('nan')] * len(results_df))
+            else:
+                # keep NaNs as-is; do not fill with global defaults here
+                results_df[score_name] = results_df[score_name].astype(float)
 
-        # NORMALIZE per-model scores to same scale [1,5] using min-max on the candidate set
-        # This avoids one model dominating due to scale differences.
+        # NORMALIZE per-model scores to same scale [0,1]. Use percentile-based strategy:
+        # - Use 5th-95th percentiles on candidate set to reduce outlier effects.
+        # - If too few non-NaN values, fall back to model-global min/max from model_recs.
+        # - If still degenerate, fallback to neutral 0.5.
         eps = 1e-8
+        p_low, p_high = 5, 95
+        # used_bounds collects percentile info used for normalization per model
+        used_bounds = {}
         for score_name in score_names:
-            # results_df[score_name] may be a DataFrame if duplicate-named columns exist;
-            # coalesce left-to-right to a single Series first.
             col_data = results_df[score_name]
+            # coalesce duplicated cols if necessary (col_data may be Series)
             if isinstance(col_data, pd.DataFrame):
                 try:
                     col = col_data.bfill(axis=1).iloc[:, 0].astype(float)
@@ -286,13 +475,60 @@ class SmoothHybridRecommender:
             else:
                 col = col_data.astype(float)
 
-            minv = col.min()
-            maxv = col.max()
-            if (maxv - minv) < eps:
-                # constant column -> set to neutral rating 3.0
-                results_df[f'{score_name}_norm'] = 3.0
+            non_na_count = col.notna().sum()
+            # compute percentile-based min/max (p5,p95) on candidate set to reduce outlier effect
+            p5 = p95 = np.nan
+            try:
+                if non_na_count >= 5:
+                    p5 = float(np.nanpercentile(col.dropna().astype(float).values, p_low))
+                    p95 = float(np.nanpercentile(col.dropna().astype(float).values, p_high))
+                else:
+                    # insufficient candidate coverage: try to aggregate global values from model_recs
+                    global_vals = []
+                    for df in model_recs:
+                        if score_name in df.columns:
+                            try:
+                                vals = df[score_name].dropna().astype(float).values.tolist()
+                                global_vals.extend(vals)
+                            except Exception:
+                                continue
+                    if len(global_vals) >= 5:
+                        p5 = float(np.nanpercentile(np.array(global_vals, dtype=float), p_low))
+                        p95 = float(np.nanpercentile(np.array(global_vals, dtype=float), p_high))
+                    else:
+                        p5 = p95 = np.nan
+                minv = p5
+                maxv = p95
+            except Exception:
+                # fallback: use simple min/max on aggregated column
+                minv = col.min(skipna=True)
+                maxv = col.max(skipna=True)
+                try:
+                    p5 = float(np.nanpercentile(col.dropna().astype(float).values, p_low)) if non_na_count>0 else np.nan
+                    p95 = float(np.nanpercentile(col.dropna().astype(float).values, p_high)) if non_na_count>0 else np.nan
+                except Exception:
+                    p5 = p95 = None
+
+            # Ensure the aggregated raw score column is numeric (coerce any stray types)
+            try:
+                results_df[score_name] = pd.to_numeric(results_df[score_name], errors='coerce')
+            except Exception:
+                pass
+
+            # If no variability, set normalized column to neutral 0.5
+            if pd.isna(minv) or pd.isna(maxv) or abs(maxv - minv) < eps:
+                # degenerate: use neutral 0.5
+                results_df[f'{score_name}_norm'] = 0.5
             else:
-                results_df[f'{score_name}_norm'] = 1.0 + 4.0 * (col - minv) / (maxv - minv)
+                # scale to [0,1] based on p5/p95
+                results_df[f'{score_name}_norm'] = (results_df[score_name] - minv) / (maxv - minv)
+                # clip to [0,1]
+                results_df[f'{score_name}_norm'] = results_df[f'{score_name}_norm'].clip(0.0, 1.0)
+                # compress extremes slightly to avoid many perfect-1.0 values
+                # map [0,1] -> [0.05,0.95] to reserve headroom
+                results_df[f'{score_name}_norm'] = results_df[f'{score_name}_norm'] * 0.9 + 0.05
+            # record used bounds for diagnostics
+            used_bounds[score_name] = {'p5': p5, 'p95': p95, 'non_na': int(non_na_count)}
         
         # Ensure unique column names by coalescing duplicate-named columns (handle duplicates robustly)
         cols_list = list(results_df.columns)
@@ -317,51 +553,70 @@ class SmoothHybridRecommender:
                         new_df[cname] = base
             results_df = new_df
 
-        # Tính trung bình có trọng số (KHÔNG CÓ VÒNG LẶP!)
-        # Always use per-user smooth weights (no meta-learning)
+        # Verbose diagnostics: show candidate counts and per-model score coverage/ranges
+        if verbose:
+            try:
+                print(f"[Hybrid Debug] Candidates after aggregation: {len(results_df)}")
+                for s in score_names:
+                    non_na = int(results_df[s].notna().sum())
+                    vmin = results_df[s].min(skipna=True)
+                    vmax = results_df[s].max(skipna=True)
+                    ub = used_bounds.get(s, {})
+                    p5 = ub.get('p5')
+                    p95 = ub.get('p95')
+                    nonna = ub.get('non_na')
+                    print(f"  - {s}: non-NaN={non_na} (used_non_na={nonna}), range=({vmin}, {vmax}), p5={p5}, p95={p95}, global_mean={default_scores.get(s)}")
+                # raw counts from sources (before dedup)
+                try:
+                    raw_counts = candidates['_source'].value_counts().to_dict()
+                except Exception:
+                    raw_counts = {}
+                print(f"  - raw candidate rows per-model (before dedup): {raw_counts}")
+                print(f"  - per-user weights: content={weights['content']:.3f}, svd={weights['svd']:.3f}, ncf={weights['ncf']:.3f}")
+            except Exception:
+                pass
+
+        # Smooth-only hybrid: no meta-learning/blender. We always use the
+        # adaptive per-item weighted blending implemented below.
+        blender_used = False
+
+        # Tính trung bình có trọng số nhưng theo cách ADAPTIVE per-item:
+        # For each movie row, only include models that have a non-NaN score.
+        # denom = sum(weight_model * mask_model). predicted = sum(weight*score_norm*mask)/denom
         final_weights = weights
 
-        try:
-            # combine using the normalized score columns
-            results_df['predicted_rating'] = (
-                final_weights['content'] * results_df['content_score_norm'] +
-                final_weights['svd'] * results_df['svd_score_norm'] +
-                final_weights['ncf'] * results_df['ncf_score_norm']
-            )
-        except Exception as e:
-            # Diagnostic and a robust fallback: reset index and coalesce any remaining duplicate score columns
-            print(f"[Hybrid Debug] Error computing predicted_rating: {e}")
-            print(f"[Hybrid Debug] Columns before fix: {results_df.columns.tolist()}")
-            results_df = results_df.reset_index(drop=True)
+        # Compute presence masks
+        content_mask = results_df['content_score'].notna().astype(float)
+        svd_mask = results_df['svd_score'].notna().astype(float)
+        ncf_mask = results_df['ncf_score'].notna().astype(float)
 
-            for score_name in score_names:
-                score_cols = [col for col in results_df.columns if col.startswith(score_name)]
-                if len(score_cols) > 1:
-                    try:
-                        results_df[score_name] = results_df[score_cols].bfill(axis=1).iloc[:, 0]
-                    except Exception:
-                        base = results_df[score_cols[0]]
-                        for col in score_cols[1:]:
-                            base = base.fillna(results_df[col])
-                        results_df[score_name] = base
-                    for col in score_cols:
-                        if col != score_name and col in results_df.columns:
-                            results_df = results_df.drop(columns=[col])
-                elif len(score_cols) == 1:
-                    if score_cols[0] != score_name:
-                        results_df = results_df.rename(columns={score_cols[0]: score_name})
+        # Numerator using normalized scores (in [0,1])
+        num = (
+            final_weights['content'] * results_df['content_score_norm'].fillna(0.0) * content_mask +
+            final_weights['svd'] * results_df['svd_score_norm'].fillna(0.0) * svd_mask +
+            final_weights['ncf'] * results_df['ncf_score_norm'].fillna(0.0) * ncf_mask
+        )
 
-                if score_name not in results_df.columns:
-                    results_df[score_name] = 3.0
-                else:
-                    results_df[score_name] = results_df[score_name].fillna(3.0)
+        denom = (
+            final_weights['content'] * content_mask +
+            final_weights['svd'] * svd_mask +
+            final_weights['ncf'] * ncf_mask
+        )
 
-            # Try again
-            results_df['predicted_rating'] = (
-                weights['content'] * results_df['content_score'] +
-                weights['svd'] * results_df['svd_score'] +
-                weights['ncf'] * results_df['ncf_score']
-            )
+        # Avoid divide-by-zero: where denom == 0, fall back to mean of available normalized scores;
+        # if still NaN, use neutral 0.5 (in normalized [0,1] space)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            pred = num / denom
+
+        # Rows where denom == 0
+        missing_mask = denom == 0
+        if missing_mask.any():
+            row_mean = results_df[[f'{s}_norm' for s in score_names]].mean(axis=1, skipna=True)
+            row_mean = row_mean.fillna(0.5)
+            pred = pred.where(~missing_mask, row_mean)
+
+        # scale normalized prediction [0,1] back to rating scale [1,5]
+        results_df['predicted_rating'] = 1.0 + 4.0 * pred
         
         # TỐI ƯU HÓA: Lọc vectorized
         if exclude_rated and rated_movies:
@@ -420,7 +675,13 @@ class SmoothHybridRecommender:
             if c not in results_df.columns:
                 results_df[c] = pd.NA
         results_df = results_df[cols]
-        
+        # drop temporary _source if present
+        if '_source' in results_df.columns:
+            try:
+                results_df = results_df.drop(columns=['_source'])
+            except Exception:
+                pass
+
         if return_weights:
             return results_df, weights
         return results_df
@@ -468,7 +729,13 @@ class SmoothHybridRecommender:
         
         # TỐI ƯU HÓA: Concatenate một lần thay vì vòng lặp dict
         combined_recs = pd.concat(all_cb_recs, ignore_index=True)
+        # remove favorites
         combined_recs = combined_recs[~combined_recs['movieId'].isin(fav_movie_ids)]
+        # filter out movieIds not present in movies_df to avoid downstream errors
+        try:
+            combined_recs = combined_recs[combined_recs['movieId'].isin(self.movie_set)]
+        except Exception:
+            pass
         
         # TỐI ƯU HÓA: Vectorized groupby aggregation
         results_df = combined_recs.groupby('movieId').agg({
@@ -524,35 +791,92 @@ class SmoothHybridRecommender:
              ratings_path='../data/cleaned/ratings_cleaned.csv',
              movies_path='../data/cleaned/movies_cleaned.csv'):
         """Load hybrid system từ saved models"""
-        
         print("ĐANG TẢI HỆ THỐNG HYBRID RECOMMENDER")
-        
-        
+
+        # Load data first so fallback stubs can use movies/ratings when models are absent
+        print("Đang tải dữ liệu (ratings/movies)...")
+        try:
+            ratings_df = pd.read_csv(ratings_path)
+        except Exception:
+            ratings_df = pd.DataFrame(columns=['userId', 'movieId', 'rating'])
+
+        try:
+            movies_df = pd.read_csv(movies_path)
+        except Exception:
+            movies_df = pd.DataFrame(columns=['movieId', 'title_clean', 'genres', 'rating_avg', 'rating_count'])
+
+        # Content-based loader with fallback to popular-movies stub
         print("Đang tải Content-Based...")
-        from content_based_recommender import ContentBasedRecommender
-        content_rec = ContentBasedRecommender()  
-        
+        try:
+            from content_based_recommender import ContentBasedRecommender
+            content_rec = ContentBasedRecommender()
+        except Exception as e:
+            print(f"[Hybrid Load] Content model load failed: {e}. Using popular-movies fallback.")
+            class StubContentRec:
+                def __init__(self, movies_df):
+                    self.movies = movies_df
+
+                def recommend(self, movie_id=None, movie_title=None, n=10, verbose=False):
+                    if self.movies is None or self.movies.empty:
+                        return pd.DataFrame()
+                    df = self.movies.nlargest(n, 'rating_avg')[['movieId', 'title_clean', 'genres', 'rating_avg']].copy()
+                    df['content_score'] = df['rating_avg'].astype(float)
+                    df['title'] = df['title_clean']
+                    df['rank'] = range(1, len(df) + 1)
+                    return df
+
+                def recommend_multi(self, movie_ids, n=10, verbose=False):
+                    return self.recommend(n=n, verbose=verbose)
+
+            content_rec = StubContentRec(movies_df)
+
+        # SVD loader with fallback to popular-movies stub
         print("Đang tải SVD...")
-        from svd_recommender import load_recommender
-        svd_rec = load_recommender()
-        
+        try:
+            from svd_recommender import load_recommender
+            svd_rec = load_recommender()
+        except Exception as e:
+            print(f"[Hybrid Load] SVD load failed: {e}. Using popular-movies fallback.")
+            class StubSVD:
+                def __init__(self, movies_df):
+                    self.movies = movies_df
+
+                def recommend(self, user_id, n=10, exclude_rated=True, min_rating_count=0):
+                    if self.movies is None or self.movies.empty:
+                        return pd.DataFrame()
+                    df = self.movies.nlargest(n, 'rating_avg')[['movieId', 'title_clean', 'genres', 'rating_avg']].copy()
+                    df['predicted_rating'] = df['rating_avg'].astype(float)
+                    df['title'] = df['title_clean']
+                    df['rank'] = range(1, len(df) + 1)
+                    return df
+
+                def recommend_new_user(self, favorite_movies, n=10, min_rating_count=0):
+                    return self.recommend(None, n=n, exclude_rated=False)
+
+            svd_rec = StubSVD(movies_df)
+
+        # NCF loader (NCF already has an internal fallback in its class)
         print("Đang tải NCF...")
-        from neural_cf_recommender import NCFRecommender
-        ncf_rec = NCFRecommender.load()
-        
-        print("Đang tải dữ liệu...")
-        ratings_df = pd.read_csv(ratings_path)
-        movies_df = pd.read_csv(movies_path)
-        
-        print("Hoàn tất!")
-        
-        
+        try:
+            from neural_cf_recommender import NCFRecommender
+            ncf_rec = NCFRecommender.load()
+        except Exception:
+            # NCFRecommender.load already returns a StubNCFRecommender on failure
+            try:
+                from neural_cf_recommender import NCFRecommender
+                ncf_rec = NCFRecommender.load()
+            except Exception:
+                ncf_rec = None
+
+        print("Hoàn tất tải hybrid (với fallback nếu cần)")
+
         return cls(content_rec, svd_rec, ncf_rec, ratings_df, movies_df)
     
     def __repr__(self):
         return (f"SmoothHybridRecommender("
                 f"users={len(self.user_rating_counts):,}, "
                 f"movies={len(self.movies):,})")
+
 
 
 def visualize_weight_curves(output_path='../figures/weight_curves.png'):

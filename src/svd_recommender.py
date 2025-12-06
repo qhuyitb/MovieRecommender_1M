@@ -221,11 +221,15 @@ class SVDRecommender:
         )
         
         recommendations['rank'] = range(1, len(recommendations) + 1)
-        recommendations = recommendations.rename(columns={'title_clean': 'title'})
-        
+        # Keep both title_clean and title for compatibility
+        if 'title' not in recommendations.columns:
+            recommendations['title'] = recommendations['title_clean']
+        # Add model-specific score alias
+        recommendations['svd_score'] = recommendations['predicted_rating']
+
         return recommendations[[
-            'rank', 'movieId', 'title', 'genres', 
-            'predicted_rating', 'rating_avg', 'rating_count'
+            'rank', 'movieId', 'title_clean', 'title', 'genres',
+            'predicted_rating', 'svd_score', 'rating_avg', 'rating_count'
         ]]
     
     def _predict_batch_vectorized(self, 
@@ -331,11 +335,14 @@ class SVDRecommender:
         )
         
         recommendations['rank'] = range(1, len(recommendations) + 1)
-        recommendations = recommendations.rename(columns={'title_clean': 'title'})
-        
+        # Keep both title_clean and title
+        if 'title' not in recommendations.columns:
+            recommendations['title'] = recommendations['title_clean']
+        recommendations['svd_score'] = recommendations['predicted_rating']
+
         return recommendations[[
-            'rank', 'movieId', 'title', 'genres', 
-            'predicted_rating', 'rating_avg', 'rating_count'
+            'rank', 'movieId', 'title_clean', 'title', 'genres', 
+            'predicted_rating', 'svd_score', 'rating_avg', 'rating_count'
         ]]
     
     def _fold_in_user_fast(self, 
