@@ -6,7 +6,11 @@ PERFORMANCE-OPTIMIZED Smooth Hybrid Recommender
 import numpy as np
 import pandas as pd
 import warnings
+import logging
 warnings.filterwarnings('ignore')
+
+# module logger
+logger = logging.getLogger(__name__)
 
 
 class SmoothHybridRecommender:
@@ -79,11 +83,11 @@ class SmoothHybridRecommender:
         self.user_set = set(self._user_rated_cache.keys())
         self.movie_set = set(self.movies['movieId'].unique())
         
-        print("Smooth Hybrid Recommender sẵn sàng!")
-        print(f"   - Content-Based: {len(movies_df):,} phim")
-        print(f"   - SVD: Phân rã ma trận")
-        print(f"   - NCF: Deep Learning")
-        print(f"   - Số người dùng: {len(self.user_rating_counts):,}")
+        logger.info("Smooth Hybrid Recommender sẵn sàng!")
+        logger.info("   - Content-Based: %d phim", len(movies_df))
+        logger.info("   - SVD: Phân rã ma trận")
+        logger.info("   - NCF: Deep Learning")
+        logger.info("   - Số người dùng: %d", len(self.user_rating_counts))
     
     @staticmethod
     def calculate_smooth_weights(n_ratings, method='sigmoid', min_weight: float = 0.02, max_content_weight: float = 1.0):
@@ -213,14 +217,12 @@ class SmoothHybridRecommender:
                 weights['svd'] = weights['svd'] / total
         
         if verbose:
-            
-            print(f"GỢI Ý HYBRID - User {user_id}")
-            
-            print(f"Số đánh giá: {n_ratings}")
-            print(f"Trọng số:")
-            print(f"   - Content-Based: {weights['content']:.3f}")
-            print(f"   - SVD: {weights['svd']:.3f}")
-            print(f"   - NCF: {weights['ncf']:.3f}")
+            logger.info("GỢI Ý HYBRID - User %s", user_id)
+            logger.info("Số đánh giá: %d", n_ratings)
+            logger.info("Trọng số:")
+            logger.info("   - Content-Based: %.3f", weights['content'])
+            logger.info("   - SVD: %.3f", weights['svd'])
+            logger.info("   - NCF: %.3f", weights['ncf'])
            
         
         # TỐI ƯU HÓA: Lấy danh sách phim đã xem từ cache (O(1) thay vì O(n) query)
@@ -305,8 +307,7 @@ class SmoothHybridRecommender:
                     model_recs.append(cb_recs)
                     model_counts['content'] = model_counts.get('content', 0) + len(cb_recs)
             except Exception as e:
-                if verbose:
-                    print(f"Content-Based thất bại: {e}")
+                logger.warning("Content-Based thất bại: %s", e)
         
         # 2. SVD
         # 2. SVD: collect candidates even if weight small when collect_all_candidates True
@@ -341,8 +342,7 @@ class SmoothHybridRecommender:
                     model_recs.append(svd_recs)
                     model_counts['svd'] = model_counts.get('svd', 0) + len(svd_recs)
             except Exception as e:
-                if verbose:
-                    print(f"SVD thất bại: {e}")
+                logger.warning("SVD thất bại: %s", e)
         
         # 3. NCF
         # 3. NCF: always collect NCF candidates (NCF often strong for active users)
@@ -367,8 +367,7 @@ class SmoothHybridRecommender:
                     model_recs.append(ncf_recs)
                     model_counts['ncf'] = model_counts.get('ncf', 0) + len(ncf_recs)
             except Exception as e:
-                if verbose:
-                    print(f"NCF thất bại: {e}")
+                logger.warning("NCF thất bại: %s", e)
         
         if not model_recs:
             if return_weights:
@@ -443,7 +442,7 @@ class SmoothHybridRecommender:
             try:
                 for df in model_recs:
                     src = df['_source'].iat[0] if ('_source' in df.columns and len(df)>0) else 'unknown'
-                    print(f"[Hybrid Debug] sample rows from source={src}:\n", df.head(3))
+                    logger.debug("[Hybrid Debug] sample rows from source=%s:\n%s", src, df.head(3))
             except Exception:
                 pass
 
@@ -455,14 +454,14 @@ class SmoothHybridRecommender:
             candidates = candidates[candidates['movieId'].isin(self.movie_set)]
             after_cnt = len(candidates)
             if verbose:
-                print(f"[Hybrid Debug] Removed {before_cnt-after_cnt} candidates not in movies_df")
+                logger.debug("[Hybrid Debug] Removed %d candidates not in movies_df", (before_cnt-after_cnt))
         except Exception:
             pass
 
         # Ensure common columns exist to allow aggregation without KeyError
         if verbose:
             try:
-                print(f"[Hybrid Debug] Candidates collected per model (post-dedup lengths): {model_counts}")
+                logger.debug("[Hybrid Debug] Candidates collected per model (post-dedup lengths): %s", model_counts)
             except Exception:
                 pass
 
@@ -607,7 +606,8 @@ class SmoothHybridRecommender:
         # Verbose diagnostics: show candidate counts and per-model score coverage/ranges
         if verbose:
             try:
-                print(f"[Hybrid Debug] Candidates after aggregation: {len(results_df)}")
+                diag_lines = []
+                diag_lines.append(f"[Hybrid Debug] Candidates after aggregation: {len(results_df)}")
                 for s in score_names:
                     non_na = int(results_df[s].notna().sum())
                     vmin = results_df[s].min(skipna=True)
@@ -616,14 +616,14 @@ class SmoothHybridRecommender:
                     p5 = ub.get('p5')
                     p95 = ub.get('p95')
                     nonna = ub.get('non_na')
-                    print(f"  - {s}: non-NaN={non_na} (used_non_na={nonna}), range=({vmin}, {vmax}), p5={p5}, p95={p95}, global_mean={default_scores.get(s)}")
-                # raw counts from sources (before dedup)
+                    diag_lines.append(f"  - {s}: non-NaN={non_na} (used_non_na={nonna}), range=({vmin}, {vmax}), p5={p5}, p95={p95}, global_mean={default_scores.get(s)}")
                 try:
                     raw_counts = candidates['_source'].value_counts().to_dict()
                 except Exception:
                     raw_counts = {}
-                print(f"  - raw candidate rows per-model (before dedup): {raw_counts}")
-                print(f"  - per-user weights: content={weights['content']:.3f}, svd={weights['svd']:.3f}, ncf={weights['ncf']:.3f}")
+                diag_lines.append(f"  - raw candidate rows per-model (before dedup): {raw_counts}")
+                diag_lines.append(f"  - per-user weights: content={weights['content']:.3f}, svd={weights['svd']:.3f}, ncf={weights['ncf']:.3f}")
+                logger.debug("\n".join(diag_lines))
             except Exception:
                 pass
 
@@ -743,10 +743,9 @@ class SmoothHybridRecommender:
         weights = self.calculate_smooth_weights(n_ratings, method=method)
         
         
-        print(f"GỢI Ý CHO NGƯỜI DÙNG MỚI")
-      
-        print(f"Phim yêu thích: {n_ratings}")
-        print(f"Trọng số: CB={weights['content']:.2f}, SVD={weights['svd']:.2f}, NCF={weights['ncf']:.2f}")
+        logger.info("GỢI Ý CHO NGƯỜI DÙNG MỚI")
+        logger.info("Phim yêu thích: %d", n_ratings)
+        logger.info("Trọng số: CB=%.2f, SVD=%.2f, NCF=%.2f", weights['content'], weights['svd'], weights['ncf'])
         
         
         fav_movie_ids = [m for m, r in favorite_movies]
@@ -769,10 +768,10 @@ class SmoothHybridRecommender:
                     
                     cb_recs['source_movie'] = movie_id
                     all_cb_recs.append(cb_recs)
-                    print(f"Tìm được {len(cb_recs)} phim từ movie {movie_id}")  # ← Debug log
+                    logger.debug("Tìm được %d phim từ movie %s", len(cb_recs), movie_id)
                     
             except Exception as e:
-                print(f"Lỗi movie {movie_id}: {e}")  # ← Better error handling
+                logger.exception("Lỗi khi thu thập gợi ý cho movie %s: %s", movie_id, e)
                 continue
         
         if not all_cb_recs:
@@ -842,10 +841,10 @@ class SmoothHybridRecommender:
              ratings_path='../data/cleaned/ratings_cleaned.csv',
              movies_path='../data/cleaned/movies_cleaned.csv'):
         """Load hybrid system từ saved models"""
-        print("ĐANG TẢI HỆ THỐNG HYBRID RECOMMENDER")
+        logger.info("ĐANG TẢI HỆ THỐNG HYBRID RECOMMENDER")
 
         # Load data first so fallback stubs can use movies/ratings when models are absent
-        print("Đang tải dữ liệu (ratings/movies)...")
+        logger.info("Đang tải dữ liệu (ratings/movies)...")
         try:
             ratings_df = pd.read_csv(ratings_path)
             # normalize id/rating dtypes
@@ -884,12 +883,12 @@ class SmoothHybridRecommender:
             movies_df = pd.DataFrame(columns=['movieId', 'title_clean', 'genres', 'rating_avg', 'rating_count'])
 
         # Content-based loader with fallback to popular-movies stub
-        print("Đang tải Content-Based...")
+        logger.info("Đang tải Content-Based...")
         try:
             from content_based_recommender import ContentBasedRecommender
             content_rec = ContentBasedRecommender()
         except Exception as e:
-            print(f"[Hybrid Load] Content model load failed: {e}. Using popular-movies fallback.")
+            logger.warning("[Hybrid Load] Content model load failed: %s. Using popular-movies fallback.", e)
             class StubContentRec:
                 def __init__(self, movies_df):
                     self.movies = movies_df
@@ -936,12 +935,12 @@ class SmoothHybridRecommender:
             pass
 
         # SVD loader with fallback to popular-movies stub
-        print("Đang tải SVD...")
+        logger.info("Đang tải SVD...")
         try:
             from svd_recommender import load_recommender
             svd_rec = load_recommender()
         except Exception as e:
-            print(f"[Hybrid Load] SVD load failed: {e}. Using popular-movies fallback.")
+            logger.warning("[Hybrid Load] SVD load failed: %s. Using popular-movies fallback.", e)
             class StubSVD:
                 def __init__(self, movies_df):
                     self.movies = movies_df
@@ -961,7 +960,7 @@ class SmoothHybridRecommender:
             svd_rec = StubSVD(movies_df)
 
         # NCF loader (NCF already has an internal fallback in its class)
-        print("Đang tải NCF...")
+        logger.info("Đang tải NCF...")
         try:
             from neural_cf_recommender import NCFRecommender
             ncf_rec = NCFRecommender.load()
@@ -973,7 +972,7 @@ class SmoothHybridRecommender:
             except Exception:
                 ncf_rec = None
 
-        print("Hoàn tất tải hybrid (với fallback nếu cần)")
+        logger.info("Hoàn tất tải hybrid (với fallback nếu cần)")
 
         return cls(content_rec, svd_rec, ncf_rec, ratings_df, movies_df)
     
@@ -1033,14 +1032,14 @@ def visualize_weight_curves(output_path='../figures/weight_curves.png'):
     outp.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
     plt.savefig(str(outp), dpi=300, bbox_inches='tight')
-    print(f"Đã lưu: {outp}")
+    logger.info("Đã lưu: %s", outp)
     plt.close()
 
 
 def demo():
     """Demo smooth hybrid system"""
     
-    print("SMOOTH HYBRID RECOMMENDER SYSTEM - DEMO")
+    logger.info("SMOOTH HYBRID RECOMMENDER SYSTEM - DEMO")
     
     
     # Load hybrid
@@ -1054,8 +1053,8 @@ def demo():
     ]
     
     for user_id, desc in test_cases:
-        print(f"\n{'='*80}")
-        print(f"TEST: {desc} (User {user_id})")
+        logger.info("%s", '\n' + ('='*80))
+        logger.info("TEST: %s (User %s)", desc, user_id)
 
         
         recs, weights = hybrid.recommend(
@@ -1064,17 +1063,14 @@ def demo():
         )
         
         if not recs.empty:
-            print("\nTop 5 Gợi ý:")
+            logger.info("Top 5 Gợi ý:")
             for _, row in recs.iterrows():
-                print(f"#{row['rank']} {row['title_clean'][:40]:<40} "
-                      f"→ {row['predicted_rating']:.2f}")
+                logger.info("#%d %s → %.2f", int(row['rank']), str(row['title_clean'])[:40], float(row['predicted_rating']))
     
     # Visualize
-    
-    print("TẠO ĐỒ THỊ WEIGHT CURVES...")
+    logger.info("TẠO ĐỒ THỊ WEIGHT CURVES...")
     visualize_weight_curves()
-    
-    print("\nDEMO HOÀN TẤT!")
+    logger.info("DEMO HOÀN TẤT!")
 
 
 # ĐÁNH GIÁ HIỆU NĂNG
@@ -1086,7 +1082,7 @@ def benchmark_performance():
     test_users = [12, 3, 100, 250, 500]
     
     
-    print("ĐÁNH GIÁ HIỆU NĂNG")
+    logger.info("ĐÁNH GIÁ HIỆU NĂNG")
     
     times = []
     for user_id in test_users:
@@ -1095,10 +1091,10 @@ def benchmark_performance():
         elapsed = time.time() - start
         times.append(elapsed)
         
-        print(f"User {user_id}: {elapsed*1000:.2f}ms - {len(recs)} gợi ý")
+        logger.info("User %s: %.2fms - %d gợi ý", user_id, elapsed*1000.0, len(recs))
     
-    print(f"\nThời gian trung bình: {np.mean(times)*1000:.2f}ms")
-    print(f"Tổng thời gian: {sum(times)*1000:.2f}ms")
+    logger.info("Thời gian trung bình: %.2fms", np.mean(times)*1000.0)
+    logger.info("Tổng thời gian: %.2fms", sum(times)*1000.0)
 
 
 if __name__ == "__main__":
