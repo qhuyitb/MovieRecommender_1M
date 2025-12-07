@@ -13,6 +13,57 @@ class SmoothHybridRecommender:
     """Performance-optimized Hybrid Recommender"""
     
     def __init__(self, content_based_rec, svd_rec, ncf_rec, ratings_df, movies_df):
+        # Validate / normalize inputs early to avoid downstream dtype issues
+        # (ratings_df may come from external callers and sometimes be malformed)
+        if ratings_df is None:
+            ratings_df = pd.DataFrame(columns=['userId', 'movieId', 'rating'])
+        else:
+            try:
+                # ensure DataFrame
+                if not isinstance(ratings_df, pd.DataFrame):
+                    ratings_df = pd.DataFrame(ratings_df)
+            except Exception:
+                ratings_df = pd.DataFrame(columns=['userId', 'movieId', 'rating'])
+
+            # coerce numeric id/rating columns
+            for c in ['userId', 'movieId', 'rating']:
+                if c in ratings_df.columns:
+                    ratings_df[c] = pd.to_numeric(ratings_df[c], errors='coerce')
+
+            # drop rows missing essential ids
+            if 'userId' in ratings_df.columns and 'movieId' in ratings_df.columns:
+                ratings_df = ratings_df[ratings_df['userId'].notna() & ratings_df['movieId'].notna()]
+                try:
+                    ratings_df['userId'] = ratings_df['userId'].astype(int)
+                    ratings_df['movieId'] = ratings_df['movieId'].astype(int)
+                except Exception:
+                    pass
+
+        if movies_df is None:
+            movies_df = pd.DataFrame(columns=['movieId', 'title_clean', 'genres', 'rating_avg', 'rating_count'])
+        else:
+            try:
+                if not isinstance(movies_df, pd.DataFrame):
+                    movies_df = pd.DataFrame(movies_df)
+            except Exception:
+                movies_df = pd.DataFrame(columns=['movieId', 'title_clean', 'genres', 'rating_avg', 'rating_count'])
+
+            if 'movieId' in movies_df.columns:
+                movies_df['movieId'] = pd.to_numeric(movies_df['movieId'], errors='coerce')
+            if 'rating_avg' in movies_df.columns:
+                movies_df['rating_avg'] = pd.to_numeric(movies_df['rating_avg'], errors='coerce')
+            if 'rating_count' in movies_df.columns:
+                movies_df['rating_count'] = pd.to_numeric(movies_df['rating_count'], errors='coerce')
+
+            # drop invalid movieId rows
+            if 'movieId' in movies_df.columns:
+                movies_df = movies_df[movies_df['movieId'].notna()]
+                try:
+                    movies_df['movieId'] = movies_df['movieId'].astype(int)
+                except Exception:
+                    pass
+
+        # assign validated objects to instance
         self.content_rec = content_based_rec
         self.svd_rec = svd_rec
         self.ncf_rec = ncf_rec
@@ -26,7 +77,7 @@ class SmoothHybridRecommender:
         self.user_rating_counts = {uid: len(mids) for uid, mids in self._user_rated_cache.items()}
         # Precompute quick membership sets
         self.user_set = set(self._user_rated_cache.keys())
-        self.movie_set = set(movies_df['movieId'].unique())
+        self.movie_set = set(self.movies['movieId'].unique())
         
         print("Smooth Hybrid Recommender sẵn sàng!")
         print(f"   - Content-Based: {len(movies_df):,} phim")
@@ -35,7 +86,7 @@ class SmoothHybridRecommender:
         print(f"   - Số người dùng: {len(self.user_rating_counts):,}")
     
     @staticmethod
-    def calculate_smooth_weights(n_ratings, method='sigmoid', min_weight: float = 0.02, max_content_weight: float = 0.1):
+    def calculate_smooth_weights(n_ratings, method='sigmoid', min_weight: float = 0.02, max_content_weight: float = 1.0):
         """Calculate smooth weights with a minimum weight floor.
 
         Args:
@@ -134,7 +185,7 @@ class SmoothHybridRecommender:
     def recommend(self, user_id, n=10, method='sigmoid', 
                   exclude_rated=True, return_weights=False, verbose=False,
                   collect_all_candidates=True, min_weight: float = 0.02,
-                  max_content_weight: float = 0.1, content_for_cold_only: bool = True):
+                  max_content_weight: float = 1.0, content_for_cold_only: bool = True):
         """
         TỐI ƯU HÓA: Gợi ý hybrid với vectorized operations
         
@@ -797,11 +848,38 @@ class SmoothHybridRecommender:
         print("Đang tải dữ liệu (ratings/movies)...")
         try:
             ratings_df = pd.read_csv(ratings_path)
+            # normalize id/rating dtypes
+            if 'userId' in ratings_df.columns:
+                ratings_df['userId'] = pd.to_numeric(ratings_df['userId'], errors='coerce')
+            if 'movieId' in ratings_df.columns:
+                ratings_df['movieId'] = pd.to_numeric(ratings_df['movieId'], errors='coerce')
+            if 'rating' in ratings_df.columns:
+                ratings_df['rating'] = pd.to_numeric(ratings_df['rating'], errors='coerce')
+            # drop rows missing essential ids
+            if 'userId' in ratings_df.columns and 'movieId' in ratings_df.columns:
+                ratings_df = ratings_df[ratings_df['userId'].notna() & ratings_df['movieId'].notna()]
+                try:
+                    ratings_df['userId'] = ratings_df['userId'].astype(int)
+                    ratings_df['movieId'] = ratings_df['movieId'].astype(int)
+                except Exception:
+                    pass
         except Exception:
             ratings_df = pd.DataFrame(columns=['userId', 'movieId', 'rating'])
 
         try:
             movies_df = pd.read_csv(movies_path)
+            # normalize movieId and rating_avg
+            if 'movieId' in movies_df.columns:
+                movies_df['movieId'] = pd.to_numeric(movies_df['movieId'], errors='coerce')
+            if 'rating_avg' in movies_df.columns:
+                movies_df['rating_avg'] = pd.to_numeric(movies_df['rating_avg'], errors='coerce')
+            # drop rows with missing movieId
+            if 'movieId' in movies_df.columns:
+                movies_df = movies_df[movies_df['movieId'].notna()]
+                try:
+                    movies_df['movieId'] = movies_df['movieId'].astype(int)
+                except Exception:
+                    pass
         except Exception:
             movies_df = pd.DataFrame(columns=['movieId', 'title_clean', 'genres', 'rating_avg', 'rating_count'])
 
@@ -829,6 +907,33 @@ class SmoothHybridRecommender:
                     return self.recommend(n=n, verbose=verbose)
 
             content_rec = StubContentRec(movies_df)
+
+        # If our movies_df is empty (e.g. failed to load earlier), try to take the
+        # movies DataFrame from the content-based recommender which usually
+        # loads the same cleaned CSV. This prevents downstream dtype issues
+        # where `rating_avg` may be missing or object-typed causing nlargest
+        # and other numeric ops to fail.
+        try:
+            if (movies_df is None or len(movies_df) == 0) and hasattr(content_rec, 'movies'):
+                movies_from_cb = content_rec.movies
+                if movies_from_cb is not None and len(movies_from_cb) > 0:
+                    movies_df = movies_from_cb.copy()
+                    # ensure numeric types
+                    if 'movieId' in movies_df.columns:
+                        movies_df['movieId'] = pd.to_numeric(movies_df['movieId'], errors='coerce')
+                    if 'rating_avg' in movies_df.columns:
+                        movies_df['rating_avg'] = pd.to_numeric(movies_df['rating_avg'], errors='coerce')
+                    if 'rating_count' in movies_df.columns:
+                        movies_df['rating_count'] = pd.to_numeric(movies_df['rating_count'], errors='coerce')
+                    # drop invalid movieId rows
+                    if 'movieId' in movies_df.columns:
+                        movies_df = movies_df[movies_df['movieId'].notna()]
+                        try:
+                            movies_df['movieId'] = movies_df['movieId'].astype(int)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
         # SVD loader with fallback to popular-movies stub
         print("Đang tải SVD...")
@@ -922,9 +1027,13 @@ def visualize_weight_curves(output_path='../figures/weight_curves.png'):
         ax.text(5, 1.02, '5', ha='center', fontsize=9, color='gray')
         ax.text(20, 1.02, '20', ha='center', fontsize=9, color='gray')
     
+    # Ensure output directory exists and save
+    from pathlib import Path
+    outp = Path(output_path)
+    outp.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"Đã lưu: {output_path}")
+    plt.savefig(str(outp), dpi=300, bbox_inches='tight')
+    print(f"Đã lưu: {outp}")
     plt.close()
 
 
