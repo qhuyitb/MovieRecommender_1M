@@ -110,6 +110,21 @@ class ContentBasedRecommender:
             # Load movies data - SỬA ĐƯỜNG DẪN
             movies_file = os.path.join(self.project_root, 'data', 'cleaned', 'movies_cleaned.csv')
             self.movies = pd.read_csv(movies_file)
+
+            # Ensure numeric dtypes for keys and ratings to avoid object dtype issues
+            if 'movieId' in self.movies.columns:
+                self.movies['movieId'] = pd.to_numeric(self.movies['movieId'], errors='coerce')
+            if 'rating_avg' in self.movies.columns:
+                self.movies['rating_avg'] = pd.to_numeric(self.movies['rating_avg'], errors='coerce')
+            if 'rating_count' in self.movies.columns:
+                self.movies['rating_count'] = pd.to_numeric(self.movies['rating_count'], errors='coerce')
+            # Drop any rows without a valid movieId
+            if 'movieId' in self.movies.columns:
+                self.movies = self.movies[self.movies['movieId'].notna()]
+                try:
+                    self.movies['movieId'] = self.movies['movieId'].astype(int)
+                except Exception:
+                    pass
             
             print(f"Đã load Content-Based Model thành công!")
             print(f"  - Số phim: {len(self.movies):,}")
