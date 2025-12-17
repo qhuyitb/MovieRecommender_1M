@@ -1,13 +1,4 @@
-
 PHÂN TÍCH KHÁM PHÁ DỮ LIỆU (EDA) - TÓM TẮT INSIGHTS
-Thời gian tạo: 2025-12-01 17:25:53
-
-Thống kê Dataset:
-- Số phim: 3,416
-- Số đánh giá: 1,000,209
-- Số users: 6,040
-- Độ thưa: 95.53%
-
 
 VIZ 1: PHÂN BỐ RATING
 Rating trung bình: 3.58
