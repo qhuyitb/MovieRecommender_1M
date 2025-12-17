@@ -60,7 +60,7 @@ def evaluate_ranking_testset_v2(recommender, train_data, test_data, movies_df, m
         relevant = set(user_test[user_test['rating'] >= relevant_threshold]['movieId'].values)
         if len(relevant) >= 2:
             test_users_relevant[user_id] = relevant
-
+    
     if len(test_users_relevant) == 0:
         print("No users with relevant items in test set!")
         return []
