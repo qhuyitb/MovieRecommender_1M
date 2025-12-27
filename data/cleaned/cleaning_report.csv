@@ -1,2 +1,3 @@
-original_movies,original_ratings,original_users,cleaned_movies,cleaned_ratings,cleaned_users,movies_removed,ratings_removed,users_removed,movies_removed_pct,ratings_removed_pct,users_removed_pct,avg_ratings_per_movie,avg_ratings_per_user,min_ratings_per_movie,max_ratings_per_movie,min_ratings_per_user,max_ratings_per_user,tfidf_features,tfidf_sparsity
-3883,1000209,6040,3416,1000209,6040,467,0,0,12.026783414885397,0.0,0.0,269.88909875876953,165.5975165562914,1,3428,20,2314,1671,99.74620436513776
+version https://git-lfs.github.com/spec/v1
+oid sha256:85141067ca83ed3e7fdefd18624074afba0d4609d7b3a87ad204675c53bb099f
+size 500
