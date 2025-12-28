@@ -1,16 +1,20 @@
----
-title: MovieRecommender 1M
-emoji: 💻
-colorFrom: indigo
-colorTo: green
-sdk: docker
-pinned: false
-license: mit
+# 🎬 MovieLens 1M - Hệ Thống Gợi Ý Phim Hybrid
+![Python](https://img.shields.io/badge/Python-3.9+-blue?logo=python&logoColor=white)
+![TensorFlow](https://img.shields.io/badge/TensorFlow-2.x-orange?logo=tensorflow&logoColor=white)
+![Scikit-learn](https://img.shields.io/badge/Scikit--learn-1.x-F7931E?logo=scikit-learn&logoColor=white)
+![Pandas](https://img.shields.io/badge/Pandas-2.x-150458?logo=pandas&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.x-FF4B4B?logo=streamlit&logoColor=white)
+![Jupyter](https://img.shields.io/badge/Jupyter-Notebook-F37626?logo=jupyter&logoColor=white)
+![MIT License](https://img.shields.io/badge/License-MIT-green)
+
+
+Hệ thống gợi ý phim sử dụng **Adaptive Hybrid Recommender** (switching method) kết hợp 3 mô hình độc lập: Content-Based (TF-IDF), SVD Collaborative Filtering, và Neural Collaborative Filtering (NCF).
+
+**Live deployment (Hugging Face Spaces):**
+[🚀 Live Demo](https://huggingface.co/spaces/qhuyisthebest/MovieRecommender_1M)
+
 ---
 
-<<<<<<< HEAD
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
-=======
 ## 🎯 Kiến Trúc
 
 **3 Mô Hình Độc Lập:**
@@ -25,14 +29,18 @@ Check out the configuration reference at https://huggingface.co/docs/hub/spaces-
 - Adaptive per-item blending: chỉ dùng models có score
 - Fallback stubs khi model artifacts thiếu
 
+**Thuật ngữ:** Đây là **Switching Hybrid** (Burke 2002) với smooth transition thay vì hard switch.
+
+**Mức hoạt động người dùng:**
+- **thấp**: <5 đánh giá
+- **trung bình**: 5–19 đánh giá
+- **cao**: ≥20 đánh giá
+→ Quy định này dùng để giải thích UI và điều chỉnh trọng số mô hình.
+
 **Công thức trọng số (sigmoid-based switching):**
 
 ```python
 # Adaptive weights dựa trên số lượng đánh giá của user (n_ratings)
-# Phân loại mức hoạt động:
-#   n < 5   → "thấp"
-#   5 ≤ n < 20 → "trung bình"
-#   n ≥ 20  → "cao"
 content_weight = 1 / (1 + np.exp((n_ratings - 5)/2))      # Giảm dần khi user hoạt động nhiều hơn
 ncf_weight     = 1 / (1 + np.exp(-(n_ratings - 20)/5))    # Tăng dần khi user hoạt động nhiều
 svd_weight    = 1 - content_weight - ncf_weight           # Phần còn lại
@@ -47,15 +55,7 @@ Trong thực tế, sau bước tính biểu thức thô ở trên hệ thống c
 - Nếu áp cap làm tổng lệch, chuẩn hóa lại để tổng vẫn = 1.0.
 
 Hàm trả về dict có dạng `{'content': ..., 'svd': ..., 'ncf': ...}` đã được xử lý.
-```
 
-**Thuật ngữ:** Đây là **Switching Hybrid** (Burke 2002) với smooth transition thay vì hard switch.
-
-**Mức hoạt động người dùng:**
-- **thấp**: <5 đánh giá
-- **trung bình**: 5–19 đánh giá
-- **cao**: ≥20 đánh giá
-→ Quy định này dùng để giải thích UI và điều chỉnh trọng số mô hình.
 
 ---
 
@@ -75,6 +75,21 @@ pip install -r requirements.txt
 # https://grouplens.org/datasets/movielens/1m/
 # Giải nén vào data/raw/
 ```
+
+**Lưu ý (Git LFS):** Một số file lớn (models / dữ liệu) được theo dõi bằng Git LFS. Sau khi clone hãy chạy:
+
+```bash
+# Cài đặt git-lfs (Debian/Ubuntu)
+sudo apt-get install git-lfs
+
+# Khởi tạo git-lfs cho repo (chỉ cần chạy 1 lần trên máy)
+git lfs install
+
+# Tải về các đối tượng LFS sau khi clone
+git lfs pull
+```
+
+Nếu bạn ở macOS/Windows hoặc muốn xem hướng dẫn chi tiết, xem: https://git-lfs.github.com/
 
 **Training models (chạy notebooks 01-07):**
 ```bash
@@ -97,6 +112,9 @@ python scripts/run_ranking_evaluation.py --seed 42
 streamlit run app.py
 # → http://localhost:8501
 ```
+
+
+
 
 **3. Code API:**
 
@@ -254,4 +272,3 @@ pip install -r requirements.txt
 - **GitHub:** https://github.com/qhuyitb/MovieRecommender_1M
 
 **⭐ Nếu project hữu ích, hãy cho 1 star!**
->>>>>>> b844581 (docs: update README (structure, API, weights explanation))
