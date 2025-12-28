@@ -52,7 +52,7 @@ Trong thực tế, sau bước tính biểu thức thô ở trên hệ thống c
 - Áp dụng sàn `min_weight` (ví dụ 0.02) cho mỗi model để tránh model nào có trọng số 0.
 - Chuẩn hóa (renormalize) các trọng số để tổng = 1.0.
 - Áp giới hạn `max_content_weight` để tránh `content` chiếm ưu thế quá mức (nếu cần).
-- Nếu áp cap làm tổng lệch, chuẩn hóa lại để tổng vẫn = 1.0.
+- Nếu áp dụng giới hạn này làm tổng lệch, chuẩn hóa lại để tổng vẫn = 1.0.
 
 Hàm trả về dict có dạng `{'content': ..., 'svd': ..., 'ncf': ...}` đã được xử lý.
 
@@ -66,9 +66,17 @@ Hàm trả về dict có dạng `{'content': ..., 'svd': ..., 'ncf': ...}` đã 
 git clone https://github.com/qhuyitb/MovieRecommender_1M.git
 cd MovieRecommender_1M
 
-# Tạo venv & install dependencies
+# Tạo venv
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1  # Windows
+
+# 1) Nếu bạn chỉ muốn chạy demo (Streamlit app / quick demo):
+#    - Cài `requirements-deploy.txt` (nhẹ, đủ cho demo và deployment)
+pip install -r requirements-deploy.txt
+
+# 2) Nếu bạn muốn phát triển, tùy chỉnh hoặc train model: 
+#    - Cài `requirements.txt` (đầy đủ cho development & training)
+#    - Lưu ý: có thể mất thời gian và yêu cầu thêm công cụ/đầu vào
 pip install -r requirements.txt
 
 # Download data MovieLens 1M
