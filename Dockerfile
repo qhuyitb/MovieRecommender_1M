@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN git lfs install
 
 # install python deps first (cache tốt hơn)
-COPY requirements.txt /app/requirements.txt
+COPY requirements-deploy.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip \
     && pip install --no-cache-dir -r /app/requirements.txt
 
