@@ -29,7 +29,7 @@ Hệ thống gợi ý phim sử dụng **Adaptive Hybrid Recommender** (switchin
 - Adaptive per-item blending: chỉ dùng models có score
 - Fallback stubs khi model artifacts thiếu
 
-**Thuật ngữ:** Đây là **Switching Hybrid** (Burke 2002) với smooth transition thay vì hard switch.
+**Thuật ngữ:** Đây là **Switching Hybrid** với smooth transition thay vì hard switch.
 
 **Mức hoạt động người dùng:**
 - **thấp**: <5 đánh giá
